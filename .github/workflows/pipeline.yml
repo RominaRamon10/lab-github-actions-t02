@@ -8,9 +8,35 @@ on:
   workflow_dispatch:
 
 jobs:
+  scan:
+    name: Scan de seguridad (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Build imagen para escaneo
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: lab-github-actions:${{ github.sha }}
+
+      - name: Escaneo Trivy
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: lab-github-actions:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
   build-and-push:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
+    needs: scan
     steps:
       - name: Checkout código
         uses: actions/checkout@v4
