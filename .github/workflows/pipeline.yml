@@ -10,23 +10,60 @@ on:
 permissions:
   contents: read
 
+env:
+  APP_NAME: lab-github-actions
+
 jobs:
   build:
     name: Build Docker Image
     runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.tag.outputs.value }}
     steps:
       - name: Checkout código
         uses: actions/checkout@v4
+
+      - name: Imprimir contexto
+        run: |
+          echo "SHA: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Evento: ${{ github.event_name }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Runner OS: ${{ runner.os }}"
+
+      - name: Generar tag
+        id: tag
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "value=$SHORT_SHA" >> $GITHUB_OUTPUT
 
       - name: Build imagen (sin push)
         uses: docker/build-push-action@v5
         with:
           context: .
           push: false
-          tags: lab-github-actions:${{ github.sha }}
+          tags: ${{ env.APP_NAME }}:${{ steps.tag.outputs.value }}
+
+      - name: Generar reporte de build
+        run: |
+          mkdir -p reports
+          echo "## Build Report" > reports/build-report.md
+          echo "- App: ${{ env.APP_NAME }}" >> reports/build-report.md
+          echo "- Tag: ${{ steps.tag.outputs.value }}" >> reports/build-report.md
+          echo "- SHA: ${{ github.sha }}" >> reports/build-report.md
+          echo "- Branch: ${{ github.ref_name }}" >> reports/build-report.md
+          echo "- Actor: ${{ github.actor }}" >> reports/build-report.md
+          echo "- Fecha: $(date -u)" >> reports/build-report.md
+
+      - name: Subir reporte
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-report-${{ steps.tag.outputs.value }}
+          path: reports/
+          retention-days: 30
 
   scan:
-    name: Scan de seguridad (Trivy)
+    name: Security Gate (Trivy)
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -39,12 +76,12 @@ jobs:
           context: .
           push: false
           load: true
-          tags: lab-github-actions:${{ github.sha }}
+          tags: ${{ env.APP_NAME }}:${{ needs.build.outputs.image-tag }}
 
       - name: Escaneo Trivy
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: lab-github-actions:${{ github.sha }}
+          image-ref: ${{ env.APP_NAME }}:${{ needs.build.outputs.image-tag }}
           format: table
           exit-code: '1'
           ignore-unfixed: true
@@ -52,7 +89,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
   test:
-    name: Quality Gate (SonarCloud)
+    name: Quality Gate (Gitleaks + SonarCloud)
     runs-on: ubuntu-latest
     needs: scan
     steps:
@@ -60,6 +97,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Detect secrets (Gitleaks)
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Análisis SonarCloud
         uses: SonarSource/sonarqube-scan-action@2f77a1ec69fb1d595b06f35ab27e97605bdef703 # v5.3.2
@@ -69,7 +111,7 @@ jobs:
   push-artifact:
     name: Push a Docker Hub
     runs-on: ubuntu-latest
-    needs: test
+    needs: [build, test]
     if: github.event_name != 'pull_request'
     steps:
       - name: Checkout código
@@ -87,5 +129,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/lab-github-actions:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/lab-github-actions:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ needs.build.outputs.image-tag }}
